@@ -33,7 +33,7 @@ void layer_td_reset(tap_dance_state_t *state, void *user_data);
 
 
 enum my_keycodes {
-	STRINPT = SAFE_RANGE
+	ANY_OSK = SAFE_RANGE
 };
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
@@ -46,16 +46,16 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 ), [1] = LAYOUT_split_3x6_3(
 
-			KC_LGUI, XXXXXXX,    KC_7,    KC_8,    KC_9, KC_EXLM,           KC_GRV, KC_LCBR, KC_RCBR, KC_CIRC, KC_AMPR, _______,
-			 KC_TAB,    KC_0,    KC_4,    KC_5,    KC_6, KC_ASTR,           KC_EQL, KC_LPRN, KC_RPRN, KC_UNDS, KC_PIPE,  KC_ESC,
-			KC_LSFT, XXXXXXX,    KC_1,    KC_2,    KC_3, KC_SLSH,          KC_MINS, KC_LBRC, KC_RBRC, XXXXXXX, KC_BSLS, KC_RSFT,
+			_______, XXXXXXX,    KC_7,    KC_8,    KC_9, KC_EXLM,           KC_GRV, KC_LCBR, KC_RCBR, KC_CIRC, KC_AMPR, _______,
+			 _______,    KC_0,    KC_4,    KC_5,    KC_6, KC_ASTR,           KC_EQL, KC_LPRN, KC_RPRN, KC_UNDS, KC_PIPE,  KC_ESC,
+			_______, XXXXXXX,    KC_1,    KC_2,    KC_3, KC_SLSH,          KC_MINS, KC_LBRC, KC_RBRC, XXXXXXX, KC_BSLS, _______,
 			                           _______,  _______, _______,          _______,  _______, _______
 
 ), [2] = LAYOUT_split_3x6_3(
 
-	    KC_LGUI, CG_TOGG,   KC_F7,   KC_F8,   KC_F9,  KC_F12,          KC_HOME, LCA(KC_DOWN), LCA(KC_UP),  KC_END, XXXXXXX, _______,
-			 KC_TAB, XXXXXXX,   KC_F4,   KC_F5,   KC_F6,  KC_F11,          KC_LEFT, KC_DOWN,   KC_UP, KC_RGHT, XXXXXXX,  STRINPT,
-			KC_LSFT, LSFT(KC_LGUI), KC_F1, KC_F2, KC_F3,  KC_F10,          XXXXXXX, KC_PGDN, KC_PGUP, XXXXXXX, XXXXXXX, KC_PSCR,
+	    _______, CG_TOGG,   KC_F7,   KC_F8,   KC_F9,  KC_F12,          KC_HOME, KC_PGDN, KC_PGUP,  KC_END, XXXXXXX, _______,
+			 _______, ANY_OSK,   KC_F4,   KC_F5,   KC_F6,  KC_F11,          KC_LEFT, KC_DOWN,   KC_UP, KC_RGHT, XXXXXXX,  KC_PSCR,
+			_______, XXXXXXX, KC_F1, KC_F2, KC_F3,  KC_F10,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, _______,
 			                           _______,  _______, _______,          _______,  _______, _______
 
 )};
@@ -86,11 +86,6 @@ void oled_render_layer_state(void) {
 		oled_write_P(PSTR("Nav\n"), false);
 }
 
-
-bool is_strinpt_mode = false;
-uint8_t strinpt_ind = 0;
-char strinpt_buf[21] = { };
-bool shift_down = false;
 
 char keylog_str[24] = {};
 
@@ -243,9 +238,79 @@ tap_dance_action_t tap_dance_actions[] = {
 };
 
 // Overrides
-const key_override_t delete_key_override = ko_make_basic(MOD_MASK_SHIFT, KC_BSPC, KC_DEL);
+const key_override_t delete_key_override = ko_make_basic(MOD_BIT_RSHIFT, KC_BSPC, KC_DEL);
 
 const key_override_t **key_overrides = (const key_override_t *[]){
     &delete_key_override,
     NULL
 };
+
+// Any One Shot Key logic
+enum aosk_state {
+    AOSK_OFF,
+    AOSK_READ,
+    AOSK_WAIT,
+};
+static uint16_t aosk_code;
+static enum aosk_state aosk_current_state;
+static uint16_t aosk_timer = 0;
+static uint8_t aosk_tracker = 0;
+
+bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+    switch (keycode) {
+        case ANY_OSK:
+            // ignore keyup
+            if (!record->event.pressed) {
+                return false;
+            }
+            if (aosk_current_state == AOSK_OFF) {
+                aosk_current_state = AOSK_READ;
+                aosk_timer = timer_read();
+            } else {
+                aosk_current_state = AOSK_OFF;
+            }
+            return false;
+        case KC_A ... KC_EXSL:
+            // let keyup work normally
+            if (!record->event.pressed) {
+                return true;
+            }
+            if (aosk_current_state == AOSK_OFF) {
+                return true;
+            }
+            if (aosk_current_state == AOSK_READ) {
+                aosk_code = keycode;
+                aosk_current_state = AOSK_WAIT;
+                aosk_timer = timer_read();
+                return false;
+            }
+            register_code(aosk_code);
+            aosk_tracker++;
+            register_code(keycode);
+            return false;
+    }
+    return true;
+}
+
+void post_process_record_user(uint16_t keycode, keyrecord_t *record) {
+    switch (keycode) {
+        case KC_A ... KC_EXSL:
+            if (aosk_tracker && !record->event.pressed) {
+                aosk_tracker--;
+                if (!aosk_tracker) {
+                    unregister_code(aosk_code);
+                    aosk_current_state = AOSK_OFF;
+                }
+            }
+            break;
+    }
+}
+
+
+void matrix_scan_user(void) {
+    if (aosk_current_state != AOSK_OFF && !aosk_tracker) {
+        if (timer_elapsed(aosk_timer) > 3000) {
+            aosk_current_state = AOSK_OFF;
+        }
+    }
+}
